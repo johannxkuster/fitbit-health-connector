@@ -93,3 +93,4 @@ test("rollupDate: достаёт YYYY-MM-DD из civilStartTime точки ро�
   );
   assert.equal(rollupDate({}), undefined);
 });
+

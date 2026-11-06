@@ -6,7 +6,8 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "esbuild src/health-api.ts src/tools.ts --bundle --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test test/*.test.mjs"
+    "test": "esbuild src/health-api.ts src/tools.ts src/security.ts src/google-auth.ts src/sync-state.ts src/mcp-server.ts src/sheets.ts --bundle --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test test/*.test.mjs",
+    "check:build": "wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.10.0"
@@ -16,3 +17,4 @@
     "wrangler": "^4.119.0"
   }
 }
+

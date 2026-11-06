@@ -1,155 +1,104 @@
-/**
- * OAuth-мост между claude.ai и Google.
- *
- * /authorize — claude.ai приводит сюда пользователя; разбираем OAuth-запрос
- *   и перенаправляем в Google за согласием (scopes Google Health, readonly).
- * /callback — Google возвращает code; меняем его на токены, достаём e-mail
- *   из id_token и завершаем авторизацию: OAuthProvider выдаёт claude.ai свой
- *   код, а токены Google уезжают в props гранта (доступны MCP-обработчику).
- */
-
-const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-
+import { configured, randomToken, hash, cookie, cookieValue, html, safeHeaders, stateCall } from './security';
+export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const HEALTH_SCOPES = [
-  "openid",
-  "email",
-  // чтение
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-  "https://www.googleapis.com/auth/googlehealth.irn.readonly", // уведомления об аритмии (AFib)
-  "https://www.googleapis.com/auth/googlehealth.settings.readonly", // статус устройств (батарея, синхронизация)
-  "https://www.googleapis.com/auth/googlehealth.nutrition.readonly", // чтение своих логов воды и еды
-  // запись ручных логов (коннектор может править/удалять только свои записи)
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.writeonly",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.writeonly",
-  "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly",
-  "https://www.googleapis.com/auth/googlehealth.mindfulness.writeonly",
-  "https://www.googleapis.com/auth/googlehealth.logged_symptoms.writeonly",
+  'openid', 'email', 'https://www.googleapis.com/auth/spreadsheets',
+  ...['activity_and_fitness', 'sleep', 'health_metrics_and_measurements', 'settings', 'nutrition']
+    .map(s => 'https://www.googleapis.com/auth/googlehealth.' + s + '.readonly'),
+  ...['health_metrics_and_measurements', 'nutrition']
+    .map(s => 'https://www.googleapis.com/auth/googlehealth.' + s + '.writeonly'),
 ];
 
-function b64urlEncode(s: string): string {
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function b64urlDecode(s: string): string {
-  s = s.replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  return atob(s);
-}
-
-/** Достаёт payload из JWT без проверки подписи — токен получен напрямую
- *  от token-эндпоинта Google по TLS, подпись проверять не обязательно. */
-function decodeJwtPayload(jwt: string): any {
-  try {
-    const part = jwt.split(".")[1];
-    return JSON.parse(new TextDecoder().decode(
-      Uint8Array.from(b64urlDecode(part), (c) => c.charCodeAt(0)),
-    ));
-  } catch {
-    return {};
+async function authorize(request: Request, env: any) {
+  const info = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  const client = await env.OAUTH_PROVIDER.lookupClient(info.clientId);
+  if (!client || !client.redirectUris?.includes(info.redirectUri) ||
+      !info.codeChallenge || info.codeChallengeMethod !== 'S256') throw new Error('INVALID_CLIENT');
+  const allowed = JSON.parse(env.ALLOWED_REDIRECT_URIS || '[]');
+  if (!allowed.includes(info.redirectUri) || new URL(info.redirectUri).protocol !== 'https:') {
+    throw new Error('CLIENT_REDIRECT_NOT_ALLOWED');
   }
-}
-
-async function authorize(request: Request, env: any): Promise<Response> {
-  let oauthReqInfo: any;
-  try {
-    oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
-  } catch (e: any) {
-    return new Response("Некорректный запрос авторизации: " + (e?.message || e), { status: 400 });
-  }
-  if (!oauthReqInfo.clientId) {
-    return new Response("Отсутствует client_id", { status: 400 });
-  }
-
-  const url = new URL(request.url);
-  const params = new URLSearchParams({
-    client_id: env.GOOGLE_CLIENT_ID,
-    redirect_uri: `${url.origin}/callback`,
-    response_type: "code",
-    scope: HEALTH_SCOPES.join(" "),
-    access_type: "offline", // нужен refresh_token
-    prompt: "consent", // иначе Google выдаёт refresh_token только в первый раз
-    state: b64urlEncode(JSON.stringify(oauthReqInfo)),
+  const flow = randomToken(), browser = randomToken();
+  await stateCall(env, 'oauth:' + flow, '/flow/create', {
+    browserHash:await hash(browser), info, expires:Date.now() + 600_000
   });
-  return Response.redirect(`${GOOGLE_AUTH_URL}?${params}`, 302);
+  return new Response('<!doctype html><meta charset="utf-8"><title>Fitbit: подключение</title>' +
+    '<body style="font-family:system-ui;max-width:46rem;margin:3rem auto">' +
+    '<h1>Разрешить подключение?</h1><p>Клиент: ' + html(client.clientName || info.clientId) + '</p>' +
+    '<p>Адрес возврата: <code>' + html(info.redirectUri) + '</code></p>' +
+    '<p>Доступ: чтение здоровья, запись ручного веса/жира/воды и синхронизация с вашей таблицей. ' +
+    'Разрешайте только собственному клиенту ChatGPT. Следующий экран — согласие Google.</p>' +
+    '<form method="post" action="/consent"><input type="hidden" name="flow" value="' + flow + '">' +
+    '<button type="submit">Разрешить и перейти в Google</button></form></body>', {
+      headers:{...safeHeaders(), 'content-type':'text/html;charset=utf-8', 'set-cookie':cookie(browser)}
+    });
 }
-
-async function callback(request: Request, env: any): Promise<Response> {
-  const url = new URL(request.url);
-  const error = url.searchParams.get("error");
-  if (error) {
-    const hint = error === "access_denied"
-      ? " Если приложение в Google Cloud в режиме «Тестирование», добавь свой аккаунт в Test users (раздел Audience)."
-      : "";
-    return new Response(`Google вернул ошибку: ${error}.${hint}`, { status: 400 });
-  }
-
-  const code = url.searchParams.get("code");
-  const stateRaw = url.searchParams.get("state");
-  if (!code || !stateRaw) return new Response("Нет code/state в ответе Google", { status: 400 });
-
-  let oauthReqInfo: any;
-  try {
-    oauthReqInfo = JSON.parse(b64urlDecode(stateRaw));
-  } catch {
-    return new Response("Повреждён параметр state", { status: 400 });
-  }
-
-  const tokenResp = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: `${url.origin}/callback`,
-    }),
+async function consent(request: Request, env: any) {
+  if (request.headers.get('origin') !== env.PUBLIC_ORIGIN) throw new Error('CSRF');
+  const flow = String((await request.formData()).get('flow') || '');
+  if (!/^[\w-]{43}$/.test(flow)) throw new Error('INVALID_FLOW');
+  const browser = cookieValue(request);
+  if (!browser) throw new Error('CSRF');
+  const verifier = randomToken();
+  const result = await stateCall(env, 'oauth:' + flow, '/flow/start', {
+    browserHash:await hash(browser), verifier
   });
-  if (!tokenResp.ok) {
-    const text = await tokenResp.text();
-    return new Response(`Не удалось обменять код на токены Google (${tokenResp.status}): ${text}`, { status: 502 });
-  }
-  const tokens: any = await tokenResp.json();
-  const idInfo = decodeJwtPayload(tokens.id_token || "");
-  const email = idInfo.email || "unknown";
-
-  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
-    request: oauthReqInfo,
-    userId: idInfo.sub || email,
-    metadata: { label: email },
-    scope: oauthReqInfo.scope,
-    props: {
-      email,
-      accessToken: tokens.access_token,
-      accessTokenExpiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-      refreshToken: tokens.refresh_token || "",
-    },
-  });
-  return Response.redirect(redirectTo, 302);
+  if (!result.ok) throw new Error('INVALID_FLOW');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const challenge = btoa(String.fromCharCode(...digest)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const params = new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,
+    redirect_uri:env.PUBLIC_ORIGIN + '/callback', response_type:'code',
+    scope:HEALTH_SCOPES.join(' '), access_type:'offline', prompt:'consent',
+    state:flow, code_challenge:challenge, code_challenge_method:'S256'});
+  return new Response(null,{status:302,headers:{...safeHeaders(),location:'https://accounts.google.com/o/oauth2/v2/auth?' + params}});
 }
-
-const HOME_PAGE = `<!doctype html><meta charset="utf-8">
-<title>Fitbit Air → Claude</title>
-<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.6">
-<h1>🩺 Коннектор Fitbit Air → Claude</h1>
-<p>Это удалённый MCP-сервер, отдающий данные браслета из Google Health API.</p>
-<p>Чтобы подключить: в claude.ai открой <b>Настройки → Коннекторы → Добавить
-пользовательский коннектор</b> и укажи URL:</p>
-<p><code id="u"></code></p>
-<script>document.getElementById("u").textContent = location.origin + "/mcp";</script>
-</body>`;
-
+async function callback(request: Request, env: any) {
+  const url = new URL(request.url), flow = url.searchParams.get('state') || '';
+  const browser = cookieValue(request);
+  if (!/^[\w-]{43}$/.test(flow) || !browser) throw new Error('CSRF');
+  // Atomic consume before token exchange; KV get/delete would allow concurrent replay.
+  const saved = await stateCall(env, 'oauth:' + flow, '/flow/consume', {browserHash:await hash(browser)});
+  if (!saved.ok) throw new Error('INVALID_FLOW');
+  if (url.searchParams.has('error') || !url.searchParams.get('code')) throw new Error('GOOGLE_CONSENT_REQUIRED');
+  const resp = await fetch(GOOGLE_TOKEN_URL, {method:'POST',
+    headers:{'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,
+      grant_type:'authorization_code',code:url.searchParams.get('code')!,
+      redirect_uri:env.PUBLIC_ORIGIN + '/callback',code_verifier:saved.verifier}),
+    signal:AbortSignal.timeout(15_000)});
+  if (!resp.ok) throw new Error('GOOGLE_TOKEN_EXCHANGE_FAILED');
+  const tokens:any = await resp.json();
+  if (!tokens.access_token || !tokens.refresh_token ||
+      !HEALTH_SCOPES.filter(s => s.startsWith('https:')).every(s => (tokens.scope || '').split(' ').includes(s))) {
+    throw new Error('GOOGLE_SCOPES_OR_REFRESH_MISSING');
+  }
+  // Authenticate through Google's HTTPS UserInfo endpoint; never decode an unverified JWT.
+  const identity = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers:{authorization:'Bearer ' + tokens.access_token},signal:AbortSignal.timeout(15_000)});
+  if (!identity.ok) throw new Error('IDENTITY_FAILED');
+  const user:any = await identity.json();
+  if (!user.sub || user.email_verified !== true ||
+      user.email?.toLowerCase() !== env.ALLOWED_GOOGLE_EMAIL.toLowerCase()) throw new Error('OWNER_ONLY');
+  const {redirectTo} = await env.OAUTH_PROVIDER.completeAuthorization({request:saved.info,
+    userId:user.sub,metadata:{label:user.email},scope:saved.info.scope,
+    props:{authVersion:2,sub:user.sub,email:user.email,refreshToken:tokens.refresh_token,
+      accessToken:tokens.access_token,accessTokenExpiresAt:Date.now() + tokens.expires_in * 1000}});
+  return new Response(null,{status:302,headers:{...safeHeaders(),location:redirectTo,'set-cookie':cookie('',0)}});
+}
 export const GoogleAuthHandler = {
-  async fetch(request: Request, env: any, _ctx: any): Promise<Response> {
-    const { pathname } = new URL(request.url);
-    if (pathname === "/authorize") return authorize(request, env);
-    if (pathname === "/callback") return callback(request, env);
-    if (pathname === "/" || pathname === "") {
-      return new Response(HOME_PAGE, { headers: { "content-type": "text/html;charset=utf-8" } });
+  async fetch(request: Request, env: any): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === '/') return new Response('Fitbit Health Hub: MCP /mcp. Sheets sync requires protected OAuth and setup.',{headers:safeHeaders()});
+    try {
+      configured(env);
+      if (new URL(request.url).origin !== env.PUBLIC_ORIGIN) throw new Error('WRONG_ORIGIN');
+      if (request.method === 'GET' && path === '/authorize') return await authorize(request,env);
+      if (request.method === 'POST' && path === '/consent') return await consent(request,env);
+      if (request.method === 'GET' && path === '/callback') return await callback(request,env);
+      return new Response('Not found',{status:404,headers:safeHeaders()});
+    } catch {
+      return new Response('Подключение не завершено. Проверьте настройки и начните подключение заново.',
+        {status:400,headers:{...safeHeaders(),'set-cookie':cookie('',0)}});
     }
-    return new Response("Not found", { status: 404 });
-  },
+  }
 };
+
