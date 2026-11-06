@@ -5,12 +5,13 @@ import assert from "node:assert/strict";
 import { callTool } from "../dist-test/tools.mjs";
 
 const ENV = {
+  ALLOWED_GOOGLE_EMAIL: 'owner@example.test',
   OAUTH_KV: {
     get: async () => ({ token: "test-token", exp: Date.now() + 3_600_000 }),
     put: async () => {},
   },
 };
-const PROPS = { refreshToken: "rt" };
+const PROPS = { authVersion:2,sub:'owner-sub',email:'owner@example.test',accessToken:'test-token',accessTokenExpiresAt:Date.now()+3600000 };
 
 /** Подменяет fetch; route(url, body) возвращает payload ответа. */
 function stubFetch(route) {
@@ -116,11 +117,11 @@ test("get_activity: пусто в обоих семействах — диагн
 test("get_metric activity-level: интервальный фильтр, а не суточный", async () => {
   // nextPageToken в ответе — проверяем, что за вторую страницу не ходим (maxPages=1).
   const calls = stubFetch(() => ({ dataPoints: [], nextPageToken: "t" }));
-  await callTool(
+  await assert.rejects(() => callTool(
     "get_metric",
     { data_type: "activity-level", start_date: "2026-08-05", end_date: "2026-08-06" },
     ENV, PROPS,
-  );
+  ), /PAGINATION_INCOMPLETE/);
   const url = decodeURIComponent(calls[0].url).replace(/\+/g, " ");
   assert.match(url, /activity_level\.interval\.civil_start_time >= "2026-08-05"/);
   assert.match(url, /activity_level\.interval\.civil_start_time < "2026-08-07"/);
@@ -148,3 +149,4 @@ test("log_water: моментальный лог уходит с минутны�
   assert.equal(body.hydrationLog.interval.startTime, "2026-08-06T14:45:00Z");
   assert.equal(body.hydrationLog.interval.endTime, "2026-08-06T14:46:00Z");
 });
+
