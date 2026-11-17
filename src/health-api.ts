@@ -2,64 +2,16 @@
  * Клиент Google Health API v4 (https://health.googleapis.com/v4).
  *
  * Работает от имени пользователя: refresh_token лежит в props OAuth-гранта,
- * короткоживущий access_token кешируется в KV (ключ — хеш refresh_token),
- * чтобы не дёргать обмен на каждый вызов инструмента.
+ * короткоживущий access_token используется только в памяти запроса.
  *
  * Времена: везде, где возможно, используются «гражданские» (civil) фильтры —
  * это локальное время пользователя, часовой пояс знать не нужно.
  */
-import { GOOGLE_TOKEN_URL } from "./google-auth";
+import { googleAccessToken } from "./google-token";
 
 const BASE_URL = "https://health.googleapis.com/v4";
 
 export class HealthApiError extends Error {}
-
-async function sha256hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function getAccessToken(env: any, props: any): Promise<string> {
-  if (!props?.refreshToken) {
-    // Google не выдал refresh_token — работаем на access_token, пока жив.
-    if (props?.accessToken && props.accessTokenExpiresAt > Date.now() + 30_000) {
-      return props.accessToken;
-    }
-    throw new HealthApiError(
-      "Токен Google истёк, а refresh_token отсутствует. Переподключи коннектор в настройках Claude.",
-    );
-  }
-
-  const cacheKey = "gat:" + (await sha256hex(props.refreshToken));
-  const cached: any = await env.OAUTH_KV.get(cacheKey, "json");
-  if (cached && cached.exp > Date.now() + 30_000) return cached.token;
-
-  const resp = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
-      grant_type: "refresh_token",
-      refresh_token: props.refreshToken,
-    }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new HealthApiError(
-      `Не удалось обновить токен Google (${resp.status}). ` +
-        `Переподключи коннектор в настройках Claude. Ответ: ${text.slice(0, 300)}`,
-    );
-  }
-  const tok: any = await resp.json();
-  const ttl = Math.max(60, (tok.expires_in || 3600) - 60);
-  await env.OAUTH_KV.put(
-    cacheKey,
-    JSON.stringify({ token: tok.access_token, exp: Date.now() + ttl * 1000 }),
-    { expirationTtl: ttl + 60 },
-  );
-  return tok.access_token;
-}
 
 export async function apiCall(
   env: any,
@@ -67,11 +19,12 @@ export async function apiCall(
   path: string,
   opts: { method?: string; query?: Record<string, string>; body?: any } = {},
 ): Promise<any> {
-  const token = await getAccessToken(env, props);
+  const token = await googleAccessToken(env, props);
   let url = BASE_URL + path;
   if (opts.query) url += "?" + new URLSearchParams(opts.query);
   const resp = await fetch(url, {
     method: opts.method || "GET",
+    signal: AbortSignal.timeout(15_000),
     headers: {
       authorization: `Bearer ${token}`,
       ...(opts.body ? { "content-type": "application/json" } : {}),
@@ -79,9 +32,7 @@ export async function apiCall(
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (!resp.ok) {
-    const text = await resp.text();
-    // 1500 символов, чтобы в ошибку попадали fieldViolations из google.rpc.BadRequest.
-    throw new HealthApiError(`Google Health API ${resp.status} (${path}): ${text.slice(0, 1500)}`);
+    throw new HealthApiError(`HEALTH_HTTP_${resp.status}`);
   }
   return resp.json();
 }
@@ -104,6 +55,7 @@ export async function listDataPoints(
     pageToken = resp.nextPageToken;
     if (!pageToken) break;
   }
+  if (pageToken) throw new HealthApiError('PAGINATION_INCOMPLETE');
   return points;
 }
 
@@ -265,3 +217,4 @@ export function rollupDate(point: any): string | undefined {
 
 export const num = (v: any): number | undefined =>
   v === undefined || v === null ? undefined : Number(v);
+

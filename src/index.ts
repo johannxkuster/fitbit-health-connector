@@ -12,6 +12,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { GoogleAuthHandler } from "./google-auth";
 import { mcpHandler } from "./mcp-server";
+export { SyncState } from './sync-state';
 
 export default new OAuthProvider({
   apiRoute: "/mcp",
@@ -21,3 +22,4 @@ export default new OAuthProvider({
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
 });
+

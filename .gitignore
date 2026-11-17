@@ -3,3 +3,9 @@ dist/
 dist-test/
 .wrangler/
 .dev.vars
+dist-worker/
+*.log
+.env
+.env.*
+!.env.example
+

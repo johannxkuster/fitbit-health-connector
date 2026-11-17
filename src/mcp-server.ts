@@ -6,6 +6,15 @@
  * Авторизацию уже проверил OAuthProvider — токены Google лежат в ctx.props.
  */
 import { TOOLS, callTool } from "./tools";
+import { configured, owner, stateCall } from './security';
+
+const SYNC_TOOL = {
+  name:'sync_sheets',
+  description:'Синхронизировать активность/сон в Sheets за максимум 7 дней. process_commands=true отправляет только строки Commands с approved=TRUE. ACCEPTED требует проверки результата Google; неизвестные результаты не повторять.',
+  inputSchema:{type:'object',properties:{start_date:{type:'string'},end_date:{type:'string'},process_commands:{type:'boolean'}},required:['start_date','end_date'],additionalProperties:false},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:true}
+};
+const PUBLIC_TOOLS = [...TOOLS.filter(t=>t.name.startsWith('get_')).map(t=>({...t,annotations:{readOnlyHint:true}})),SYNC_TOOL];
 
 const SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const LATEST_VERSION = "2025-06-18";
@@ -18,7 +27,7 @@ const INSTRUCTIONS =
   "настроение, симптомы). Даты — YYYY-MM-DD в локальном времени пользователя; в log_*-инструментах " +
   "передавай datetime в ISO 8601 с часовым поясом пользователя. Для вопроса «как прошёл день» " +
   "начинай с get_daily_summary; для трендов — get_activity/get_sleep за период. " +
-  "Коннектор может удалять только записи, созданные им самим (delete_log).";
+  "Прямая запись и удаление отключены. Для веса, процента жира и воды используй очередь Commands в Sheets и sync_sheets; все остальные логи пока недоступны.";
 
 function rpcResult(id: any, result: any) {
   return { jsonrpc: "2.0", id, result };
@@ -50,17 +59,21 @@ async function handleMessage(msg: any, env: any, props: any): Promise<any | unde
     case "ping":
       return rpcResult(msg.id, {});
     case "tools/list":
-      return rpcResult(msg.id, { tools: TOOLS });
+      return rpcResult(msg.id, { tools: PUBLIC_TOOLS });
     case "tools/call": {
       const name = msg.params?.name;
       try {
-        const result = await callTool(name, msg.params?.arguments || {}, env, props);
+        if (!PUBLIC_TOOLS.some(t=>t.name===name)) throw new Error('UNSUPPORTED_TOOL');
+        const args=msg.params?.arguments || {};
+        const result = name==='sync_sheets'
+          ? await stateCall(env,'owner:' + props.sub,'/sync',{...args,props})
+          : await callTool(name,args,env,props);
         return rpcResult(msg.id, {
           content: [{ type: "text", text: JSON.stringify(result, null, 1) }],
         });
       } catch (e: any) {
         return rpcResult(msg.id, {
-          content: [{ type: "text", text: `Ошибка: ${e?.message || e}` }],
+          content: [{ type: "text", text: 'Запрос не выполнен. Проверьте подключение и безопасный статус Sync_Log.' }],
           isError: true,
         });
       }
@@ -78,6 +91,13 @@ async function handleMessage(msg: any, env: any, props: any): Promise<any | unde
 
 export const mcpHandler = {
   async fetch(request: Request, env: any, ctx: any): Promise<Response> {
+    try { configured(env); owner(env,ctx.props); }
+    catch { return new Response('Protected setup required',{status:403}); }
+    const origin=request.headers.get('origin');
+    const allowed=JSON.parse(env.ALLOWED_REDIRECT_URIS || '[]').map((u:string)=>new URL(u).origin);
+    if (origin && !allowed.includes(origin)) return new Response('Origin denied',{status:403});
+    const bytes=await request.clone().arrayBuffer();
+    if (bytes.byteLength>65536) return new Response('Request too large',{status:413});
     if (request.method === "DELETE") return new Response(null, { status: 200 });
     if (request.method !== "POST") {
       return new Response("Method Not Allowed: этот сервер принимает только POST", { status: 405 });
@@ -100,3 +120,4 @@ export const mcpHandler = {
     return Response.json(Array.isArray(payload) ? responses : responses[0]);
   },
 };
+

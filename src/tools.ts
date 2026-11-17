@@ -428,6 +428,7 @@ function simplifySleep(p: any, includeStages: boolean) {
   const s = p.sleep;
   if (!s) return null;
   return {
+    name: p.name,
     start: fmtCivil(s.interval?.civilStartTime) || s.interval?.startTime,
     end: fmtCivil(s.interval?.civilEndTime) || s.interval?.endTime,
     mainSleep: s.metadata?.mainSleep,
@@ -775,3 +776,4 @@ export async function callTool(name: string, args: any, env: any, props: any): P
   if (!impl) throw new HealthApiError(`Неизвестный инструмент: ${name}`);
   return impl(env, props, args || {});
 }
+
