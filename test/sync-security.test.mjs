@@ -73,6 +73,32 @@ test('consent rejects cross-origin POST before reading flow',async()=>{
     headers:{origin:'https://evil.test'},body:'flow=x'}),{...env,SYNC_STATE:{}});
   assert.equal(r.status,400);
 });
+test('trusted browser can start Google authorization while replay and unrelated form destinations stay blocked',async()=>{
+  const objects = new Map();
+  const fakeEnv={...env,ALLOWED_REDIRECT_URIS:'["https://chat.example.test/callback"]',
+    SYNC_STATE:{idFromName:n=>n,get:(id)=>{
+      if (!objects.has(id)) objects.set(id,new SyncState({storage:storage()},env));
+      return {fetch:(url,init)=>objects.get(id).fetch(new Request(url,init))};
+    }},
+    OAUTH_PROVIDER:{parseAuthRequest:async()=>({clientId:'c',redirectUri:'https://chat.example.test/callback',codeChallenge:'challenge',codeChallengeMethod:'S256'}),
+      lookupClient:async()=>({clientName:'ChatGPT',redirectUris:['https://chat.example.test/callback']})}
+  };
+  const page=await GoogleAuthHandler.fetch(new Request(env.PUBLIC_ORIGIN+'/authorize'),fakeEnv);
+  assert.equal(page.status,200);
+  assert.match(page.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com;/);
+  const flow=(await page.text()).match(/name="flow" value="([\w-]{43})"/)[1];
+  const browserCookie=page.headers.get('set-cookie').split(';')[0];
+  const start=()=>GoogleAuthHandler.fetch(new Request(env.PUBLIC_ORIGIN+'/consent',{method:'POST',
+    headers:{origin:env.PUBLIC_ORIGIN,cookie:browserCookie,'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({flow})}),fakeEnv);
+  const response=await start();
+  assert.equal(response.status,302);
+  const destination=new URL(response.headers.get('location'));
+  assert.equal(destination.origin,'https://accounts.google.com');
+  assert.equal(destination.pathname,'/o/oauth2/v2/auth');
+  assert.equal((await start()).status,400);
+  assert.match(response.headers.get('content-security-policy'),/form-action 'self';/);
+});
 test('queue dispatches once, preserves ACCEPTED, and reprojects after lost Sheets response',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
   let posts=0;globalThis.fetch=async()=>{posts++;return Response.json({name:'operations/op1',done:false});};
