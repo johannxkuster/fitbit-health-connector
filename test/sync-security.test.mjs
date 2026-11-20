@@ -85,6 +85,7 @@ test('trusted browser can start Google authorization while replay and unrelated 
   };
   const page=await GoogleAuthHandler.fetch(new Request(env.PUBLIC_ORIGIN+'/authorize'),fakeEnv);
   assert.equal(page.status,200);
+  assert.equal(page.headers.get('referrer-policy'),'same-origin');
   assert.match(page.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com;/);
   const flow=(await page.text()).match(/name="flow" value="([\w-]{43})"/)[1];
   const browserCookie=page.headers.get('set-cookie').split(';')[0];
@@ -98,6 +99,7 @@ test('trusted browser can start Google authorization while replay and unrelated 
   assert.equal(destination.pathname,'/o/oauth2/v2/auth');
   assert.equal((await start()).status,400);
   assert.match(response.headers.get('content-security-policy'),/form-action 'self';/);
+  assert.equal(response.headers.get('referrer-policy'),'no-referrer');
 });
 test('queue dispatches once, preserves ACCEPTED, and reprojects after lost Sheets response',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
