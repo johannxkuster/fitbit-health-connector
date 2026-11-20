@@ -6,11 +6,19 @@ import {
   addDays,
   chunkCivilRange,
   dailyRollUpBody,
+  healthErrorCode,
   rollupDate,
   rollupRangeCapDays,
   toApiDate,
   toSessionInterval,
 } from "../dist-test/health-api.mjs";
+
+test('Google error diagnostics expose only known fixed codes', () => {
+  assert.equal(healthErrorCode(403, {error:{details:[{reason:'MISSING_OAUTH_SCOPE', metadata:{token:'secret'}}]}}), 'HEALTH_HTTP_403_MISSING_OAUTH_SCOPE');
+  assert.equal(healthErrorCode(403, {error:{details:[{reason:'secret'}],message:'secret'}}), 'HEALTH_HTTP_403');
+  assert.equal(healthErrorCode(403, {error:{message:'Could not mint UberMint from GaiaMint.'}}), 'HEALTH_HTTP_403_LEGACY_ACCOUNT');
+  assert.equal(healthErrorCode(503, null), 'HEALTH_HTTP_503');
+});
 
 test("dailyRollUpBody: не содержит pageSize — живой API принимает pageSize×windowSizeDays за длительность запроса", () => {
   const body = dailyRollUpBody("2026-08-05", "2026-08-07");
