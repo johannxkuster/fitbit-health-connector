@@ -13,6 +13,19 @@ const BASE_URL = "https://health.googleapis.com/v4";
 
 export class HealthApiError extends Error {}
 
+// Return only fixed, documented reasons; never expose response messages or metadata.
+export function healthErrorCode(status: number, body: any): string {
+  const allowed = new Set(['MISSING_OAUTH_SCOPE', 'DISALLOWED_OAUTH_SCOPES',
+    'API_PRIVATE_PREVIEW_ACCESS_DENIED', 'DATA_ACCESS_DENIED', 'RESOURCE_PERMISSION_DENIED',
+    'ACCOUNT_NOT_LINKED', 'SERVICE_DISABLED', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT']);
+  const details = Array.isArray(body?.error?.details) ? body.error.details : [];
+  const reason = details.find((d: any) => typeof d?.reason === 'string' && allowed.has(d.reason))?.reason;
+  if (reason) return `HEALTH_HTTP_${status}_${reason}`;
+  if (status === 403 && body?.error?.message === 'Could not mint UberMint from GaiaMint.')
+    return 'HEALTH_HTTP_403_LEGACY_ACCOUNT';
+  return `HEALTH_HTTP_${status}`;
+}
+
 export async function apiCall(
   env: any,
   props: any,
@@ -32,7 +45,9 @@ export async function apiCall(
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (!resp.ok) {
-    throw new HealthApiError(`HEALTH_HTTP_${resp.status}`);
+    let body: any;
+    try { body = await resp.json(); } catch { /* Keep the generic status. */ }
+    throw new HealthApiError(healthErrorCode(resp.status, body));
   }
   return resp.json();
 }
