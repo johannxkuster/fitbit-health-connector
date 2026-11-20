@@ -29,7 +29,8 @@ async function authorize(request: Request, env: any) {
     'Разрешайте только собственному клиенту ChatGPT. Следующий экран — согласие Google.</p>' +
     '<form method="post" action="/consent"><input type="hidden" name="flow" value="' + flow + '">' +
     '<button type="submit">Разрешить и перейти в Google</button></form></body>', {
-      headers:{...safeHeaders(), 'content-type':'text/html;charset=utf-8', 'set-cookie':cookie(browser)}
+      // Chromium checks the form's 302 destination against the originating page's CSP.
+      headers:{...safeHeaders(true), 'content-type':'text/html;charset=utf-8', 'set-cookie':cookie(browser)}
     });
 }
 async function consent(request: Request, env: any) {

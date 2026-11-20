@@ -35,9 +35,12 @@ export function cookie(value: string, age = 600) {
 export function html(s: string) {
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]!));
 }
-export function safeHeaders() {
+export function safeHeaders(allowGoogleFormRedirect = false) {
   return {'cache-control':'no-store', 'referrer-policy':'no-referrer',
-    'x-content-type-options':'nosniff', 'content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"};
+    'x-content-type-options':'nosniff', 'content-security-policy':
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" +
+      (allowGoogleFormRedirect ? ' https://accounts.google.com' : '') +
+      "; frame-ancestors 'none'; base-uri 'none'"};
 }
 export async function stateCall(env: any, name: string, path: string, body: any) {
   const stub = env.SYNC_STATE.get(env.SYNC_STATE.idFromName(name));
