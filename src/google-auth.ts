@@ -30,7 +30,9 @@ async function authorize(request: Request, env: any) {
     '<form method="post" action="/consent"><input type="hidden" name="flow" value="' + flow + '">' +
     '<button type="submit">Разрешить и перейти в Google</button></form></body>', {
       // Chromium checks the form's 302 destination against the originating page's CSP.
-      headers:{...safeHeaders(true), 'content-type':'text/html;charset=utf-8', 'set-cookie':cookie(browser)}
+      // A no-referrer policy makes form POSTs send Origin: null in browsers.
+      // Preserve the exact Origin check without sending the authorization URL to Google.
+      headers:{...safeHeaders(true), 'referrer-policy':'same-origin', 'content-type':'text/html;charset=utf-8', 'set-cookie':cookie(browser)}
     });
 }
 async function consent(request: Request, env: any) {
