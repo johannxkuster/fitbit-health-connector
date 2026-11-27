@@ -18,7 +18,16 @@ function storage() {
 }
 const env={ALLOWED_GOOGLE_EMAIL:'owner@example.test',SPREADSHEET_ID:'test-spreadsheet-123456789',
   PUBLIC_ORIGIN:'https://worker.example.test',GOOGLE_CLIENT_ID:'client',GOOGLE_CLIENT_SECRET:'secret',SYNC_ENABLED:'true'};
-const props={authVersion:2,sub:'owner',email:'owner@example.test',accessToken:'access-secret',accessTokenExpiresAt:Date.now()+3600000};
+const props={authVersion:2,sub:'owner',email:'owner@example.test',accessToken:'access-secret',accessTokenExpiresAt:Date.now()+3600000,refreshToken:'refresh-secret'};
+function mockHealthFetch(healthRequest) {
+  return async (url,init) => {
+    if (String(url)==='https://oauth2.googleapis.com/token') {
+      const scope=new URLSearchParams(init.body).get('scope');
+      return Response.json({access_token:'scoped-test-token',scope});
+    }
+    return healthRequest(url,init);
+  };
+}
 const raw='{"weight_kg":80,"datetime":"2026-11-06T10:00:00+03:00"}';
 const row=['command_001','log_weight',raw,true];
 function setup(rows=[row]) {
@@ -103,7 +112,7 @@ test('trusted browser can start Google authorization while replay and unrelated 
 });
 test('queue dispatches once, preserves ACCEPTED, and reprojects after lost Sheets response',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
-  let posts=0;globalThis.fetch=async()=>{posts++;return Response.json({name:'operations/op1',done:false});};
+  let posts=0;globalThis.fetch=mockHealthFetch(async()=>{posts++;return Response.json({name:'operations/op1',done:false});});
   const {state,sheets,statuses}=setup();
   let fail=true;const write=sheets.commandStatus;
   sheets.commandStatus=async(...a)=>{if(fail){fail=false;throw Error('SHEETS_HTTP_503');}return write(...a);};
@@ -113,7 +122,7 @@ test('queue dispatches once, preserves ACCEPTED, and reprojects after lost Sheet
 });
 test('ambiguous POST is never retried',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
-  let posts=0;globalThis.fetch=async()=>{posts++;throw Error('connection lost access-secret');};
+  let posts=0;globalThis.fetch=mockHealthFetch(async()=>{posts++;throw Error('connection lost access-secret');});
   const {state,sheets,statuses}=setup();
   await state.process(sheets,props,[row]);await state.process(sheets,props,[row]);
   assert.equal(posts,1);assert.equal(statuses.at(-1).status,'NEEDS_REVIEW');
@@ -131,7 +140,7 @@ test('crash after reservation becomes NEEDS_REVIEW without dispatch',async t=>{
 });
 test('same ID with different payload is a conflict, duplicate IDs block whole batch',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
-  let posts=0;globalThis.fetch=async()=>{posts++;return Response.json({done:false});};
+  let posts=0;globalThis.fetch=mockHealthFetch(async()=>{posts++;return Response.json({done:false});});
   const a=setup();await a.state.process(a.sheets,props,[row]);
   const changed=[...row];changed[2]=raw.replace('80','81');
   const sheets={read:async()=>[changed],commandStatus:async(...args)=>a.statuses.push(args[3])};
@@ -143,7 +152,7 @@ test('same ID with different payload is a conflict, duplicate IDs block whole ba
 });
 test('completed first ten rows do not starve later queued commands',async t=>{
   const before=globalThis.fetch;t.after(()=>globalThis.fetch=before);
-  let posts=0;globalThis.fetch=async()=>{posts++;return Response.json({done:false});};
+  let posts=0;globalThis.fetch=mockHealthFetch(async()=>{posts++;return Response.json({done:false});});
   const rows=Array.from({length:11},(_,i)=>['command_'+String(i).padStart(3,'0'),row[1],row[2],true]);
   const a=setup(rows);await a.state.process(a.sheets,props,rows);assert.equal(posts,10);
   await a.state.process(a.sheets,props,rows);assert.equal(posts,11);
