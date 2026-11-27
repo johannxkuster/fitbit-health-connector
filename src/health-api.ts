@@ -32,7 +32,7 @@ export async function apiCall(
   path: string,
   opts: { method?: string; query?: Record<string, string>; body?: any } = {},
 ): Promise<any> {
-  const token = await googleAccessToken(env, props);
+  const token = await googleAccessToken(env, props, true);
   let url = BASE_URL + path;
   if (opts.query) url += "?" + new URLSearchParams(opts.query);
   const resp = await fetch(url, {

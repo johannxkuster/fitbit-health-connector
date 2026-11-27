@@ -11,12 +11,18 @@ const ENV = {
     put: async () => {},
   },
 };
-const PROPS = { authVersion:2,sub:'owner-sub',email:'owner@example.test',accessToken:'test-token',accessTokenExpiresAt:Date.now()+3600000 };
+const PROPS = { authVersion:2,sub:'owner-sub',email:'owner@example.test',accessToken:'test-token',accessTokenExpiresAt:Date.now()+3600000,refreshToken:'test-refresh' };
 
 /** Подменяет fetch; route(url, body) возвращает payload ответа. */
 function stubFetch(route) {
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === 'https://oauth2.googleapis.com/token') {
+      const scope = new URLSearchParams(init.body).get('scope');
+      assert.ok(scope && scope.split(' ').every(s => s.startsWith('https://www.googleapis.com/auth/googlehealth.')));
+      return {ok:true,json:async()=>({access_token:'scoped-test-token',scope})};
+    }
+    assert.equal(init.headers.authorization, 'Bearer scoped-test-token');
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ url: String(url), body });
     const payload = route(String(url), body) ?? {};

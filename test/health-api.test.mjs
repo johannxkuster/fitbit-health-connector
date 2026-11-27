@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   addDays,
+  apiCall,
   chunkCivilRange,
   dailyRollUpBody,
   healthErrorCode,
@@ -12,6 +13,22 @@ import {
   toApiDate,
   toSessionInterval,
 } from "../dist-test/health-api.mjs";
+
+test('Health uses a narrowed token and rejects an unexpectedly broad token', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const env={ALLOWED_GOOGLE_EMAIL:'owner@example.test',GOOGLE_CLIENT_ID:'test',GOOGLE_CLIENT_SECRET:'test'};
+  const props={authVersion:2,sub:'owner',email:'owner@example.test',refreshToken:'test',accessToken:'broad',accessTokenExpiresAt:Date.now()+3600000};
+  globalThis.fetch=async (url,init) => {
+    if (String(url).includes('oauth2.googleapis.com')) {
+      const scope=new URLSearchParams(init.body).get('scope');
+      assert.ok(scope.split(' ').every(s=>s.startsWith('https://www.googleapis.com/auth/googlehealth.')));
+      return Response.json({access_token:'narrow',scope:scope+' https://www.googleapis.com/auth/spreadsheets'});
+    }
+    throw new Error('Health must not receive the broad token');
+  };
+  await assert.rejects(()=>apiCall(env,props,'/test'),/GOOGLE_SCOPED_TOKEN_REQUIRED/);
+});
 
 test('Google error diagnostics expose only known fixed codes', () => {
   assert.equal(healthErrorCode(403, {error:{details:[{reason:'MISSING_OAUTH_SCOPE', metadata:{token:'secret'}}]}}), 'HEALTH_HTTP_403_MISSING_OAUTH_SCOPE');
